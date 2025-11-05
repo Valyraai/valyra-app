@@ -1,16 +1,13 @@
 import fs from "fs";
 import path from "path";
-import YAML from "js-yaml";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 
 const task = process.env.TASK || "Scaffold Valyra app";
 const masterPlanPath = process.env.MASTER_PLAN_PATH || "docs/THE_FINAL_MASTERPLAN_v2.0.md";
-
 const openaiKey = process.env.OPENAI_API_KEY || "";
 const anthropicKey = process.env.ANTHROPIC_API_KEY || "";
 
-// Fail clearly if no provider keys
 if (!openaiKey && !anthropicKey) {
   console.error("ERROR: Neither OPENAI_API_KEY nor ANTHROPIC_API_KEY is set in repo Secrets.");
   process.exit(1);
@@ -31,16 +28,21 @@ function readMasterPlan() {
   return fs.readFileSync(masterPlanPath, "utf-8");
 }
 
+// —— We now demand STRICT JSON (no YAML) and strip code fences if present ——
 const SYSTEM = `
-You are Valyra Build Agent. Generate production-quality code, DB migrations, RLS policies,
-and docs for the Valyra app, using the Master Plan in /docs.
-- Framework: Next.js (App Router) + Tailwind + Supabase (Auth/Postgres/Storage).
-- Marketing site is on Framer (not in this repo).
-- Secure app: login/register wizard (10-question brief), Packs list, Pack detail with Approve/Changes,
-  Approvals loop calling Make.com webhook (secret), email templates (Resend), migrations in supabase/migrations/*.sql.
-- Respect RLS. Don’t put secrets in client code. Use env names: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY,
-  MAKE_APPROVAL_WEBHOOK, RESEND_API_KEY, STRIPE_SECRET_KEY.
-- Return ONLY a YAML document: {files:[{path,content}], notes:"..."} with NO extra commentary.
+You are Valyra Build Agent. Generate production-grade code for Valyra using the Master Plan in /docs.
+Stack: Next.js (App Router) + Tailwind + Supabase (Auth/Postgres/Storage). Framer hosts the public site.
+Build secure app pages: / (Packs), /packs/[id], /analytics, /agent, /assets, /settings, /login, /register.
+Include: registration wizard (10-question brief), packs list/detail with Approve/Request-Changes buttons
+that call MAKE_APPROVAL_WEBHOOK (GET + secret), email template resend/emails/pack.html,
+and SQL migrations under supabase/migrations/*.sql (do NOT execute).
+Respect RLS. No secrets in client code.
+RETURN ONLY a JSON object of shape:
+{
+  "files":[{"path":"string","content":"string"}],
+  "notes":"string"
+}
+No markdown, no prose, no code fences. If unsure, return a minimal valid JSON with "files":[] and a diagnostic "notes".
 `;
 
 const USER_TEMPLATE = (master, task) => `
@@ -50,30 +52,33 @@ ${master}
 TASK:
 ${task}
 
-Produce:
-- minimal working app if missing (package.json, next.config, app/*, lib/supabase, etc.)
-- registration wizard with onboarding brief (10 Q)
-- packs pages (list + [id]) wired to Make webhook (GET + secret)
-- supabase/migrations/*.sql for tables + basic RLS (DO NOT execute)
-- email template (resend/emails/pack.html)
-- steps.md with local run + env vars + deploy notes
-Return ONLY valid YAML with this exact shape:
-files:
-  - path: string
-    content: |
-      (file content)
-notes: |
-  (short notes)
-No code fences; no markdown.
+RESPONSE FORMAT (STRICT):
+{
+  "files":[{"path":"string","content":"string"}],
+  "notes":"string"
+}
+Return ONLY this JSON.
 `;
 
-// ---- NEW: strip code fences if they appear anyway
-function extractYaml(text) {
-  const fence = text.match(/```yaml([\s\S]*?)```/i);
+// Strip ```json ... ``` or ``` ... ``` if present
+function extractJson(text) {
+  const fence = text.match(/```json([\s\S]*?)```/i);
   if (fence) return fence[1].trim();
-  const fenceAny = text.match(/```([\s\S]*?)```/);
-  if (fenceAny) return fenceAny[1].trim();
+  const any = text.match(/```([\s\S]*?)```/);
+  if (any) return any[1].trim();
+  // Try to clip to first { .. last }
+  const first = text.indexOf("{");
+  const last = text.lastIndexOf("}");
+  if (first !== -1 && last !== -1 && last > first) return text.slice(first, last + 1);
   return text.trim();
+}
+
+function tryParseJSON(raw) {
+  try {
+    return JSON.parse(extractJson(raw));
+  } catch (e) {
+    return null;
+  }
 }
 
 async function callOpenAI(master, task) {
@@ -86,7 +91,7 @@ async function callOpenAI(master, task) {
       { role: "user", content: USER_TEMPLATE(master, task) },
     ],
   });
-  return res.choices[0].message.content || "";
+  return res.choices[0]?.message?.content || "";
 }
 
 async function callAnthropic(master, task) {
@@ -103,40 +108,42 @@ async function callAnthropic(master, task) {
 
 (async () => {
   const master = readMasterPlan();
-  let raw = "";
-  try {
-    if (openaiKey) {
-      console.log("Using OpenAI provider…");
-      raw = await callOpenAI(master, task);
-    } else {
-      console.log("Using Anthropic provider…");
-      raw = await callAnthropic(master, task);
+
+  // Provider order: OpenAI first if key present, else Anthropic
+  let raw1 = "", raw2 = "";
+  let parsed = null;
+  let providerUsed = "";
+
+  if (openaiKey) {
+    try {
+      console.log("Trying OpenAI…");
+      raw1 = await callOpenAI(master, task);
+      writeFileSafe("AI_RAW_openai.txt", raw1);
+      parsed = tryParseJSON(raw1);
+      providerUsed = "openai";
+    } catch (e) {
+      console.error("OpenAI error:", e?.response?.data || e.message || e);
     }
-  } catch (e) {
-    console.error("LLM ERROR:", e?.response?.data || e.message || e);
-    process.exit(1);
   }
 
-  // Save raw for debugging
-  writeFileSafe("AI_RAW.md", raw);
-
-  // Strip ```yaml fences before YAML.parse
-  const yamlText = extractYaml(raw);
-  let parsed;
-  try {
-    parsed = YAML.load(yamlText);
-  } catch (e) {
-    console.error("YAML PARSE ERROR:", e.message);
-    console.error("See AI_RAW.md for the model output.");
-    process.exit(1);
+  if ((!parsed || !parsed.files) && anthropicKey) {
+    try {
+      console.log("Falling back to Anthropic…");
+      raw2 = await callAnthropic(master, task);
+      writeFileSafe("AI_RAW_anthropic.txt", raw2);
+      parsed = tryParseJSON(raw2);
+      providerUsed = "anthropic";
+    } catch (e) {
+      console.error("Anthropic error:", e?.response?.data || e.message || e);
+    }
   }
 
-  if (!parsed?.files || !Array.isArray(parsed.files) || !parsed.files.length) {
-    console.error("ERROR: Model did not return {files:[...]}.");
-    console.error("See AI_RAW.md for the model output.");
+  if (!parsed || !Array.isArray(parsed.files)) {
+    console.error("ERROR: Model did not return a valid JSON with {files:[...]}.");
+    console.error("See AI_RAW_openai.txt / AI_RAW_anthropic.txt for details.");
     process.exit(1);
   }
 
   parsed.files.forEach(f => writeFileSafe(f.path, f.content));
-  if (parsed.notes) writeFileSafe("AI_NOTES.md", parsed.notes);
+  if (parsed.notes) writeFileSafe("AI_NOTES.md", `[provider: ${providerUsed}] ` + parsed.notes);
 })();
