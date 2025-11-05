@@ -1,0 +1,1 @@
+export default function Assets() {return (<div className="text-center"><h1 className="text-4xl font-bold">Assets</h1></div>);}

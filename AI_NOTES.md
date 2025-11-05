@@ -1,0 +1,1 @@
+[provider: openai] Bootstrap minimal Valyra app with Next.js, Tailwind, and Supabase setup.
