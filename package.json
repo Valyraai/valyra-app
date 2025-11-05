@@ -1,1 +1,9 @@
-{"name":"valyra","version":"1.0.0","private":true,"scripts":{"dev":"next dev","build":"next build","start":"next start"},"dependencies":{"next":"latest","react":"latest","react-dom":"latest","@supabase/supabase-js":"latest","tailwindcss":"latest","postcss":"latest","autoprefixer":"latest"}}
+{"name":"valyra","version":"1.0.0","private":true,"scripts":{"dev":"next dev","build":"next build","start":"next start"},"dependencies":{"next":"latest","react":"latest","react-dom":"latest","@supabase/supabase-js":"latest","":"latest","":"latest","autoprefixer":"latest""devDependencies": {
+  "tailwindcss": "3.4.13",
+  "postcss": "8.4.47",
+  "autoprefixer": "10.4.20",
+  "eslint": "8.44.0",
+  "eslint-config-next": "13.4.7",
+  "autoprefixer": "^10.4.14"
+}
+}
