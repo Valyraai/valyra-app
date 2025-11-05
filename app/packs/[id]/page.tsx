@@ -1,0 +1,1 @@
+export default function PackDetail() {return (<div className="text-center p-10"><h1 className="text-4xl font-bold">Pack Detail</h1></div>);}
